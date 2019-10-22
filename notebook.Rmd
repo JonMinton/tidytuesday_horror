@@ -1,0 +1,276 @@
+---
+title: "Tidy Tuesday 22/10/19"
+output: html_notebook
+---
+
+
+
+This is an attempt to see what I can produce from the tidytuesday dataset for 22/10/19.
+
+The link is [here](https://github.com/rfordatascience/tidytuesday/tree/master/data/2019/2019-10-22)
+
+
+```{r}
+pacman::p_load(tidyverse)
+
+```
+
+```{r}
+horror_movies <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2019/2019-10-22/horror_movies.csv")
+
+```
+
+Duration against time 
+
+
+```{r}
+horror_movies %>% 
+  ggplot(aes(x = release_date, y= movie_run_time)) + 
+  geom_point()
+
+
+```
+
+Further tidying needed
+ 
+ 
+```{r}
+glimpse(horror_movies)
+
+```
+
+All are characters.
+
+Date is of either one of two formats 
+
+* year alone (4 characters)
+* day/month/year (can use `dmy`)
+
+To start with let's just extract the year component. Later (possibly) we could try to impute the dates for those records wehre only the year exists. 
+
+
+```{r}
+horror_movies2 <- 
+  horror_movies %>%
+    mutate(type = ifelse(
+      nchar(release_date) == 4, 
+      "NUM",
+      "DATE"
+      )
+    ) %>% 
+    mutate(
+      date2 = ifelse(
+        type == "NUM", 
+        paste0("15-6-", release_date),
+        release_date
+      )
+    ) %>% 
+    mutate(
+      release_date2 = lubridate::dmy(date2)
+    )
+
+```
+
+
+```{r}
+
+horror_movies2 %>% 
+  mutate(
+    yr = lubridate::year(release_date2)
+  ) %>% 
+  mutate(
+    dur = stringr::str_extract(movie_run_time, "\\d+") %>% as.numeric
+  ) %>% 
+  ggplot(aes(x = release_date2, y = dur)) + 
+  geom_point() +
+  stat_smooth()
+
+```
+
+
+My suspicion is that horror films are particularly short. Let's try and extract those films which are horror. 
+
+Of course this is a stupid question to ask, as they're all horror films. Instead the question could be reframed as:
+
+* Are films that are just horrors shorter than films of multiple genres?
+
+The number of genres can be determined by the number of "|" symbols in the string `genres`. 
+
+Let's test this with some simple strings 
+
+```{r}
+str_count(" Horror", "\\|")
+str_count("Horror | Sci-Fi", "\\|")
+
+
+```
+
+```{r}
+horror_movies2 %>% 
+  mutate(
+    num_additional_genres = map_int(genres, str_count, "\\|")
+  ) %>% 
+  count(num_additional_genres)
+
+```
+
+So let's go for a binary division: Is the duration of 'pure horror' films lower than of mixed genre? 
+
+
+```{r}
+horror_movies2 %>% 
+  mutate(
+    num_additional_genres = map_int(genres, str_count, "\\|")
+  ) %>% 
+  mutate(
+    pure_horror = num_additional_genres == 0
+  )  %>% 
+  mutate(
+    dur = stringr::str_extract(movie_run_time, "\\d+") %>% as.numeric
+  ) %>% 
+  ggplot(aes(x = pure_horror, y = dur)) + 
+    geom_boxplot()
+
+
+```
+
+Let's test this
+
+
+```{r}
+horror_movies2 %>% 
+  mutate(
+    num_additional_genres = map_int(genres, str_count, "\\|")
+  ) %>% 
+  mutate(
+    pure_horror = num_additional_genres == 0
+  )  %>% 
+  mutate(
+    dur = stringr::str_extract(movie_run_time, "\\d+") %>% as.numeric
+  ) %>% 
+  lm(dur ~ pure_horror, .) %>% 
+  anova()
+
+```
+
+So a statistically significant reduction 
+
+```{r}
+horror_movies2 %>% 
+  mutate(
+    num_additional_genres = map_int(genres, str_count, "\\|")
+  ) %>% 
+  mutate(
+    pure_horror = num_additional_genres == 0
+  )  %>% 
+  mutate(
+    dur = stringr::str_extract(movie_run_time, "\\d+") %>% as.numeric
+  ) %>% 
+  lm(dur ~ pure_horror, .) %>% 
+  broom::tidy()
+
+```
+So pure horror films are about 4 minutes shorer on average than mixed genre films, and horror films are around 92 minutes (i.e. shorter than most films these days seem to be). 
+
+Of films that contain only one additional genre, what's the mean length of each genre? 
+
+```{r}
+horror_movies2 %>% 
+  mutate(num_additional_genres = map_int(genres, str_count, "\\|")) %>% 
+  filter(num_additional_genres == 1) %>% 
+  mutate(other_genre = genres %>% 
+            str_remove_all("\\|") %>% 
+            str_remove_all("[Hh]orror") %>% 
+            str_trim()) %>% 
+  count(other_genre, sort = TRUE) %>% 
+  mutate(total_n = cumsum(n)) %>% 
+  mutate(prop_n = (n / sum(n)) %>% round(2))
+
+```
+
+So the most common genres are Thrillers, Comedies, Dramas, and Mysteries. 
+Around a half are also thrillers, and a quarter are comedies 
+
+Let's now compare the following for duration
+
+
+* Pure horrors
+* Horror Thrillers
+* Horror Comedies
+
+```{r}
+horror_movies2 %>% 
+  mutate(num_additional_genres = map_int(genres, str_count, "\\|")) %>% 
+  mutate(other_genre = genres %>% 
+            str_remove_all("\\|") %>% 
+            str_remove_all("[Hh]orror") %>% 
+            str_trim()) %>% 
+  mutate(
+    is_thriller = map_lgl(other_genre, str_detect, "[Tt]hriller"),
+    is_comedy   = map_lgl(other_genre, str_detect, "[Cc]omedy"),
+    is_pure     = num_additional_genres == 0
+  ) %>% 
+  mutate(
+    dur = stringr::str_extract(movie_run_time, "\\d+") %>% as.numeric
+  ) %>% 
+  lm(dur ~ is_thriller + is_comedy, .) %>% 
+  broom::tidy()
+  
+
+```
+
+So, thrillers are slightly longer, and comedies longer still. 
+
+
+What about the relationship betwen these three main types and budget? 
+
+Let's just look at those with budgets reported in dollars 
+
+
+Changed my mind, looking at rating instead 
+
+```{r}
+horror_movies2 %>% 
+  ggplot(aes(release_date2, review_rating)) + 
+  geom_point() + 
+  stat_smooth()
+
+```
+
+There's possibly been an upshift in rating in the last couple of years 
+
+
+Let's colour the points by genre
+
+```{r}
+horror_movies2 %>% 
+  mutate(num_additional_genres = map_int(genres, str_count, "\\|")) %>% 
+  mutate(other_genre = genres %>% 
+            str_remove_all("\\|") %>% 
+            str_remove_all("[Hh]orror") %>% 
+            str_trim()) %>% 
+  mutate(
+    is_thriller = map_lgl(other_genre, str_detect, "[Tt]hriller"),
+    is_comedy   = map_lgl(other_genre, str_detect, "[Cc]omedy"),
+    is_pure     = num_additional_genres == 0
+  ) %>% 
+  mutate(
+    category = case_when(
+      is_pure                  ~  "Pure Horror",
+      is_thriller & !is_comedy ~  "Thriller",
+      !is_thriller & is_comedy ~  "Comedy",
+      is_thriller & is_comedy  ~  "Thriller-Comedy",
+      TRUE                     ~  "Other"
+    )
+  ) %>% 
+  ggplot(aes(release_date2, review_rating, shape = category, colour = category)) + 
+    geom_point() + 
+    stat_smooth()
+  
+
+```
+
+
+There's no clear distinction between these categories as far as rating's considered either. 
+
+
